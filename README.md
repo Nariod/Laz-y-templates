@@ -3,7 +3,7 @@ Laz-y project compatible C# templates for shellcode injection. These templates o
 
 | Name | Technique | OPSEC consideration | Comment |
 | --- | --- | --- | --- |
-| bayraktar | QueueUserAPC injection | Not stealthy at all | Injects shellcode in all threads of all processes |
+| bayraktar | QueueUserAPC injection | Not stealthy at all | Injects shellcode in all threads of all processes. You will likely end up with dozens of shells. |
 
 ## Usage
 Add the wanted templates to the [laz-y](https://github.com/Nariod/laz-y) project "templates" folder.

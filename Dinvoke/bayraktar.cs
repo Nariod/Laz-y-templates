@@ -2,6 +2,8 @@
 
 // This template requires D/Invoke installed from Nugget
 
+// Thanks to https://github.com/FatCyclone/D-Pwn
+
 using System;
 using System.Runtime.InteropServices;
 using System.Diagnostics;

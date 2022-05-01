@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Collections.Generic;
 
-namespace bayraktar
+namespace apcqueue
 {
     internal class Program
     {
